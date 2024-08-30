@@ -1,167 +1,190 @@
 // Fractional Divider (performs division by a fractional value on average)
-module fractional_divider(in_clk,out_clk,p_int,e,f_frac,rst,rst_ddsm);
-input in_clk,rst,rst_ddsm;
-input [7:0]p_int;
-input [2:0]e;
-input [15:0]f_frac;
-output out_clk;
-wire [3:0]c;
-wire [7:0] p;
-reg [7:0]cs;
-wire cout;
-integer_divider I1 (.in_clk(in_clk),.p(p),.e(e),.mout_clk(out_clk),.rst(rst));
-third_order_ddsm T1(f_frac,c,out_clk,rst_ddsm);
-always @(c) begin
-    if (c[3]==1) begin
-        cs={1'b1,1'b1,1'b1,1'b1,c};   
+module fractional_divider(input_clk, output_clk, divider_integer, divider_select, divider_fraction, rst_n, rst_ddsm_n);
+    input input_clk, rst_n, rst_ddsm_n;
+    input [7:0] divider_integer;
+    input [2:0] divider_select;
+    input [15:0] divider_fraction;
+    output output_clk;
+    
+    wire [3:0] ddsm_control;
+    wire [7:0] sum_result;
+    reg [7:0] ddsm_shifted;
+    wire carry_out;
+    
+    integer_divider I1 (.input_clk(input_clk), .divider(sum_result), .select(divider_select), .div_clk(output_clk), .rst_n(rst_n));
+    third_order_ddsm T1(divider_fraction, ddsm_control, output_clk, rst_ddsm_n);
+    
+    always @(ddsm_control) begin
+        if (ddsm_control[3] == 1) begin
+            ddsm_shifted = {1'b1, 1'b1, 1'b1, 1'b1, ddsm_control};   
+        end
+        else begin
+            ddsm_shifted = {1'b0, 1'b0, 1'b0, 2'b0, ddsm_control};
+        end
     end
-    else cs={1'b0,1'b0,1'b0,2'b0,c};
-end
-adder_8_bit a1(p_int,cs,cout,p);
+    
+    adder_8_bit A1(divider_integer, ddsm_shifted, carry_out, sum_result);
 endmodule
 
-// 3rd-Order Digital delta sigma Modulator
-module third_order_ddsm(a,c,clk,rst);
-input [15:0]a;
-input clk,rst;
-output  signed[3:0]c;
-wire [15:0]b0,b1,b2;
-wire [3:0] c0,c1,c2;
-reg signed[3:0]c2_d;
-reg  signed[3:0]c3_d; 
-wire signed[3:0]c3;
-
-accumulator_16_bit A1(a,clk,b0,c0,rst);
-accumulator_16_bit A2(b0,clk,b1,c1,rst);
-accumulator_16_bit A3(b1,clk,b2,c2,rst);
-always @(posedge clk ) begin
-    if (rst==1) begin
-        c2_d<=0;
-        c3_d<=0;
+// 3rd-Order Digital Delta-Sigma Modulator
+module third_order_ddsm(input_frac, output_control, mod_clk, rst_n);
+    input [15:0] input_frac;
+    input mod_clk, rst_n;
+    output signed [3:0] output_control;
+    
+    wire [15:0] acc_out1, acc_out2, acc_out3;
+    wire [3:0] mod_control1, mod_control2, mod_control3;
+    reg signed [3:0] mod_control2_d, mod_control3_d; 
+    wire signed [3:0] mod_control_sum;
+    
+    accumulator_16_bit ACC1(input_frac, mod_clk, acc_out1, mod_control1, rst_n);
+    accumulator_16_bit ACC2(acc_out1, mod_clk, acc_out2, mod_control2, rst_n);
+    accumulator_16_bit ACC3(acc_out2, mod_clk, acc_out3, mod_control3, rst_n);
+    
+    always @(posedge mod_clk) begin
+        if (rst_n == 1) begin
+            mod_control2_d <= 0;
+            mod_control3_d <= 0;
+        end
+        else begin
+            mod_control2_d <= mod_control2;
+            mod_control3_d <= mod_control_sum;
+        end
     end
-    else begin
-        c2_d<=c2;
-        c3_d<=c3;
-    end
-end
-assign c3=c1+c2-c2_d;
-assign c=c0+c3-c3_d;
-
+    
+    assign mod_control_sum = mod_control1 + mod_control2 - mod_control2_d;
+    assign output_control = mod_control1 + mod_control_sum - mod_control3_d;
 endmodule
 
-//Integer divider with cascading 8 2-3 vaucher divider
-module integer_divider(in_clk,p,e,out_clk,mout_clk,rst);
-input in_clk,rst;
-input [7:0]p;
-input [2:0]e;
-output out_clk,mout_clk;
-wire [7:0] t,c,m,mn;
-genvar i,j;
-generate
-    for (i = 0;i<7 ;i=i+1 ) begin:or_gates
-        or g(mn[i],m[i+1],c[i]);
+// Integer Divider with Cascading 8 2-3 Vaucher Divider
+module integer_divider(input_clk, divider, select, output_clk, div_clk, rst_n);
+    input input_clk, rst_n;
+    input [7:0] divider;
+    input [2:0] select;
+    output output_clk, div_clk;
+    
+    wire [7:0] intermediate_t, control_bits, divider_output, intermediate_mn;
+    
+    genvar i, j;
+    generate
+        for (i = 0; i < 7; i = i + 1) begin: or_gates
+            or g(intermediate_mn[i], divider_output[i+1], control_bits[i]);
+        end
+    endgenerate
+    
+    generate
+        for (j = 1; j < 7; j = j + 1) begin: vaucher
+            vaucher_2_3 v(intermediate_t[j], intermediate_mn[j], divider[j], divider_output[j], intermediate_t[j+1], rst_n);
+        end
+    endgenerate
+    
+    vaucher_2_3 V0(input_clk, intermediate_mn[0], divider[0], div_clk, intermediate_t[1], rst_n);
+    vaucher_2_3 V1(intermediate_t[7], intermediate_mn[7], divider[7], divider_output[7], output_clk, rst_n);
+    
+    assign div_clk = divider_output[0];
+    assign control_bits[0] = intermediate_mn[7];
+    
+    decoder3x8 DEC(select, control_bits);
+endmodule
+
+// 16-bit Accumulator
+module accumulator_16_bit(input_value, clk, acc_out, control_out, rst_n);
+    input [15:0] input_value;
+    input clk, rst_n;
+    output reg [15:0] acc_out;
+    output [3:0] control_out;
+    
+    wire [15:0] sum_result;
+    adder_16bit A1(input_value, acc_out, sum_result, control_out);
+    
+    always @(posedge clk) begin
+        if (rst_n == 1) begin
+            acc_out <= 0;
+        end
+        else begin
+            acc_out <= sum_result;
+        end
     end
-endgenerate
-generate
-    for (j = 1;j<7 ;j=j+1 ) begin:vaucher
-        vaucher_2_3 v(t[j],mn[j],p[j],m[j],t[j+1],rst);
+endmodule
+
+// 16-bit Full Adder
+module adder_16bit(input1, input2, output_sum, carry_out);
+    input [15:0] input1, input2;
+    output [3:0] carry_out;
+    output [15:0] output_sum;
+    
+    assign {carry_out, output_sum} = input1 + input2;
+endmodule
+
+// Divider that Can Switch Between 2 or 3 Dividing Ratios (Vaucher Divider)
+module vaucher_2_3(input_clk, intermediate_min, divider_bit, mout, output_clk, rst_n);
+    input input_clk, intermediate_min, divider_bit, rst_n;
+    output output_clk, mout;
+    
+    reg q0, q1;
+    wire t0, t1;
+    
+    xnor g1(t0, q0, q1);
+    and g2(t1, mout, divider_bit);
+    and g3(mout, q0, intermediate_min);
+    
+    assign output_clk = ~q0;
+    
+    always @(posedge input_clk) begin
+        if (rst_n == 1) begin
+            q0 <= 0;
+            q1 <= 0;
+        end
+        else begin
+            q0 <= t0;
+            q1 <= t1;
+        end
     end
-endgenerate
-vaucher_2_3 v(in_clk,mn[0],p[0],mout_clk,t[1],rst);
-vaucher_2_3 v1(t[7],mn[7],p[7],m[7],out_clk,rst);
-assign mout_clk=m[0];
-assign c[0]=mn[7];
-decoder3x8 d(e,c);
-
 endmodule
 
-// 16-bit accumulator
-module accumulator_16_bit(a,clk,bd,c,rst);
-input [15:0]a;
-input clk,rst;
-output reg [15:0]bd;
-output [3:0]c;
-wire [15:0]b;
-adder_16bit A1(a,bd,b,c);
-always @(posedge clk ) begin
-    if (rst==1) begin
-        bd<=0;
-    end
-    else bd<=b;
-end
-
-endmodule
-
-//16-bit full adder
-module adder_16bit(in1,in2,out,c);
-input [15:0]in1,in2;
-output [3:0]c;
-output [15:0]out;
-assign {c,out}=in1+in2;
-
-endmodule
-
-// divider which can switch between 2 or 3 dividing ratio called vaucher divider 
-module vaucher_2_3(in,min,p,mout,out,rst);
-	input in,min,p,rst;
-	output out,mout;
-	reg q0,q1;
-	wire t0,t1;
-	xnor g1(t0,q0,q1);
-	and g2(t1,mout,p);
-	and g3(mout,q0,min);
-	assign out=~q0;
-	always @(posedge in)begin
-		if (rst==1) begin
-			q0<=0;
-			q1<=0;
-		end
-		else begin
-		q0<=t0;
-		q1<=t1;
-		end
-	end
-endmodule
-
-//3X8 Divider
-module decoder3x8(in,out);
-    input [2:0]in;
-    output reg [7:0]out;
+// 3x8 Divider
+module decoder3x8(input_select, output_bits);
+    input [2:0] input_select;
+    output reg [7:0] output_bits;
+    
     always @(*) begin
-        case (in)
-            0:out=1;
-            1:out=2;
-            2:out=4;
-            3:out=8;
-            4:out=16;
-            5:out=32;
-            6:out=64;
-            7:out=128;
-            default: out=1;
+        case (input_select)
+            0: output_bits = 1;
+            1: output_bits = 2;
+            2: output_bits = 4;
+            3: output_bits = 8;
+            4: output_bits = 16;
+            5: output_bits = 32;
+            6: output_bits = 64;
+            7: output_bits = 128;
+            default: output_bits = 1;
         endcase
     end
 endmodule
 
-//8-bit adder
-module adder_8_bit(a,b,cout,s);
-input [7:0]a,b;
-output cout;
-output [7:0]s;
-wire [6:0] c;
-FA f1(a[0],b[0],1'b0,s[0],c[0]);
-FA f2(a[1],b[1],c[0],s[1],c[1]);
-FA f3(a[2],b[2],c[1],s[2],c[2]);
-FA f4(a[3],b[3],c[2],s[3],c[3]);
-FA f5(a[4],b[4],c[3],s[4],c[4]);
-FA f6(a[5],b[5],c[4],s[5],c[5]);
-FA f7(a[6],b[6],c[5],s[6],c[6]);
-FA f8(a[7],b[7],c[6],s[7],cout);
+// 8-bit Adder
+module adder_8_bit(input_a, input_b, carry_out, sum_out);
+    input [7:0] input_a, input_b;
+    output carry_out;
+    output [7:0] sum_out;
+    
+    wire [6:0] carry;
+    
+    FA f1(input_a[0], input_b[0], 1'b0, sum_out[0], carry[0]);
+    FA f2(input_a[1], input_b[1], carry[0], sum_out[1], carry[1]);
+    FA f3(input_a[2], input_b[2], carry[1], sum_out[2], carry[2]);
+    FA f4(input_a[3], input_b[3], carry[2], sum_out[3], carry[3]);
+    FA f5(input_a[4], input_b[4], carry[3], sum_out[4], carry[4]);
+    FA f6(input_a[5], input_b[5], carry[4], sum_out[5], carry[5]);
+    FA f7(input_a[6], input_b[6], carry[5], sum_out[6], carry[6]);
+    FA f8(input_a[7], input_b[7], carry[6], sum_out[7], carry_out);
 endmodule
 
-//full adder
-module FA(a,b,cin,s,cout);
-input a,b,cin;
-output s,cout;
-assign s=a^b^cin;
-assign cout=a&b|a&cin|b&cin;
+// Full Adder
+module FA(bit_a, bit_b, carry_in, sum_out, carry_out);
+    input bit_a, bit_b, carry_in;
+    output sum_out, carry_out;
+    
+    assign sum_out = bit_a ^ bit_b ^ carry_in;
+    assign carry_out = (bit_a & bit_b) | (bit_a & carry_in) | (bit_b & carry_in);
 endmodule
