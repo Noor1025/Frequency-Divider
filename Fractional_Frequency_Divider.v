@@ -1,4 +1,4 @@
-// Fractional Divider (dividin on an average which is the fractional value)
+// Fractional Divider (performs division by a fractional value on average)
 module fractional_divider(in_clk,out_clk,p_int,e,f_frac,rst,rst_ddsm);
 input in_clk,rst,rst_ddsm;
 input [7:0]p_int;
